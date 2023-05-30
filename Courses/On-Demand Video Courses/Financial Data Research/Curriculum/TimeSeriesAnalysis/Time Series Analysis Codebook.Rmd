@@ -1,0 +1,867 @@
+---
+title: "Time Series Analysis Codebook"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    fig_caption: false
+    theme: lumen
+    css: assets/styles.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading Packages
+```{r, message = FALSE, warning = FALSE}
+library(knitr)
+library(quantmod)
+library(purrr)
+library(ggplot2)
+library(gridExtra)
+library(forecast)
+library(tseries)
+library(fGarch)
+```
+
+
+# Exercises
+## Exercise #1: AR(p) on Disney's Stock
+First we visualize the time plots of Disney's daily prices and its daily log returns. The price series does not seem to be stationary because its mean and variance are not constant over time. The log return series seems to have a constant mean around 0, but with some fluctuation in variance. It is valid to guess that an AR(p) model would not fit the log returns well but more evidence is needed to decide on stationarity.
+
+```{r, message = FALSE, warning = FALSE, fig.width = 15}
+# Specify ticker, start and end dates
+ticker = 'DIS'
+start_date = '2017/09/01'
+end_date = '2022/09/01'
+
+# Store price data as its symbol
+dis_px <- getSymbols('DIS', src = 'yahoo', from = start_date, to = end_date)
+# Use Adjusted price column
+dis_px <- reduce(map(ticker, function(x) Ad(get(x))), merge)
+# Change column name to ticker symbol
+colnames(dis_px) <- gsub('\\..*','',colnames(dis_px))
+# Compute log return for asset
+dis_lr <- na.omit(diff(log(dis_px)))
+
+# Plot time series price data
+dis_px_plt <- qplot(index(dis_px), dis_px, ylab='Price ($)', xlab='Date', main= paste(ticker, 'Daily Prices', '(', start_date, 'to', end_date, ')'), geom = 'line')
+# Plot time series log return data
+dis_lr_plt <- qplot(index(dis_lr), dis_lr, ylab="Log Return", xlab="Date", main= paste(ticker, 'Daily Log Return', '(', start_date, 'to', end_date, ')'), geom = 'line')
+# Arrange the two plots side-by-side
+grid.arrange(dis_px_plt, dis_lr_plt, ncol=2)
+```
+
+We use the Augmented Dickey-Fuller (ADF), Phillips–Perro (PP), and KPSS tests to test for the log return stationarity. In the ADF and PP tests, we reject the The null hypotheses that the series is not stationary at a 5% significance level (p-value = 0.01 < 0.05), and conclude that Disney's daily log return is stationary. In the KPSS test, we fail to reject the The null hypotheses that the series is stationary at a 5% significance level (p-value = 0.1 > 0.05), and conclude that Disney's daily log return is stationary. All 3 tests confirm that Disney's daily log return is stationary.
+
+```{r, message = FALSE, warning = FALSE}
+# Augmented Dickey-Fuller Test
+adf.test(dis_lr)
+
+# Phillips–Perron Test
+pp.test(dis_lr)
+
+# KPSS Test
+kpss.test(dis_lr)
+```
+
+We use the `auto.arima()` function to select the optimal $p$, the number of lags for lookback in our AR(p) model. The function suggests one model that minimizes the AIC score and another model that minimizes the BIC score. The model that minimizes the AIC score is $Y_{t}=-0.0943Y_{t-1}+\epsilon_{t}$, an AR(1) process, and the one that minimizes the BIC score turns out to be the same model. Here, $\phi_{1}$ is estimated to be -0.0943 in the AR(1) model. This nonzero coefficient means that there is some information in today’s log return that could be used for prediction of tomorrow’s log return, but the small value of $\phi_{1}$ means that the prediction will not be very accurate. So, the potential for profit might be negated by trading costs. Also, according to properties of AR(1), since |-0.0943|= 0.0943 < 1, the process is stationary.
+
+We set `d = 0` and `max.q = 0` because ARIMA(p,0,0) is equivalent to an AR(p) model. We will speak about the implementation of other models using ARIMA(p,d,q) configurations later. 
+
+We set `stepwise = FALSE` so that the algorithm searches over all models for the best one instead of just stopping after a few searches. We set `approximation = FALSE` so that the true values of AIC and BIC are used instead of their approximated values. If you are analyzing just one time series, and can afford
+to take some more time, it is recommended that you use these settings. Otherwise, use the default arguments to set them to TRUE.
+
+```{r, message = FALSE, warning = FALSE}
+# Select AR(p) model based on AIC 
+dis_lr_ar_aic_fit = auto.arima(dis_lr, d = 0, max.q = 0, stepwise = FALSE, approximation = FALSE, ic = 'aic')
+# Select AR(p) model based on BIC 
+dis_lr_ar_bic_fit = auto.arima(dis_lr, d = 0, max.q = 0, stepwise = FALSE, approximation = FALSE, ic = 'bic')
+```
+
+This is the model selected by minimizing the AIC score.
+
+```{r, message = FALSE, warning = FALSE}
+# Return the selected model based on AIC
+dis_lr_ar_aic_fit
+```
+
+This is the model selected by minimizing the BIC score.
+
+```{r, message = FALSE, warning = FALSE}
+# Return the selected model based on BIC
+dis_lr_ar_bic_fit
+```
+
+We move on to residual diagnostics. We call the `tsdiag()` function on chosen fitted AR(1) model. Remember, both AIC and BIC scores agrees on the same model so it doesn't matter if we choose `dis_lr_aic_fit` or `dis_lr_bic_fit`. The diagnostic function produces 3 plots. 
+
+First is the time plot of standardized residuals, which shows clustered volatility and also some dependence on the past (clusters of positive residuals occuring together and similarly for negative residuals). Overall the residuals do not resemble White Noise. Also, we can see a few residuals very large in magnitude (up to 6 standard deviations away from zero), so we also expect heavy tails (we will see
+this in the QQ-plots too). 
+
+Second is the ACF, which shows that 3 autocorrelations fall outside of the band at lag 6, 7, and 8. Hence, the series is not White Noise.
+
+Third is the plot for the p-values from the LJung-Box test, where the p-values are all significant (<0.05) for lags greater than 6, meaning the series is not White Noise.
+
+```{r, message = FALSE, warning = FALSE, fig.height=8}
+# Output residual diagnostics of the selected model
+tsdiag(dis_lr_ar_aic_fit, gof.lag = 20)
+```
+
+In addition, we plot a QQ plot to compare the AR(1) residual distribution with normal distribution quantiles. We observe that both the left and right tails of residuals are heavier than normal. This means that the AR(1) residuals follow a distribution with heavier extreme values, like the Student-t distribution.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_ar_aic_fit$residuals)
+qqline(dis_lr_ar_aic_fit$residuals, col = "black", lwd = 2)
+```
+
+We conclude that the AR(1) model is not adequate for fitting Disney's daily stock log returns because residuals diagnostics do not provide evidence of White Noise. This model can be improved despite its parsimonious nature.
+
+## Exercise #2: MA(q) on Disney's Stock
+
+We apply the `auto.arima()` function to select the optimal $q$, the number of lags for lookback in our MA(q) model. This function suggests MA(1) to be the best model that minimizes both the AIC score and BIC scores. The model takes on the mathematical form $Y_{t}=-0.0887\epsilon_{t-1}+\epsilon_{t}$. Here, $\theta_{1}$ is estimated to be -0.0887 in the MA(1) model. This nonzero coefficient means that there is some information in today’s external market information that could be used for prediction of tomorrow’s log return, but the small value of $\theta_{1}$ means that the prediction will not be very accurate. So, the potential for profit might be negated by trading costs.
+
+We set `max.p = 0` and `d = 0` because ARIMA(0,0,q) is equivalent to an MA(q) model. We will speak about the implementation of other models using ARIMA(p,d,q) configurations later.
+
+Again, we set `stepwise = FALSE` so that the algorithm searches over all models for the best one instead of just stopping after a few searches. We set `approximation = FALSE` so that the true values of AIC and BIC are used instead of their approximated values. It is recommended that you use these settings if you are analyzing just one time series, and can afford taking some more time. Otherwise, use the default arguments to set them to TRUE.
+
+```{r, message = FALSE, warning = FALSE}
+# Select MA(q) model based on AIC 
+dis_lr_ma_aic_fit = auto.arima(dis_lr, max.p = 0, d = 0, stepwise = FALSE, approximation = FALSE, ic = 'aic')
+# Select MA(q) model based on BIC 
+dis_lr_ma_bic_fit = auto.arima(dis_lr, max.p = 0, d = 0, stepwise = FALSE, approximation = FALSE, ic = 'bic')
+```
+
+This is the model selected by minimizing the AIC score.
+
+```{r, message = FALSE, warning = FALSE}
+# Return the selected model based on AIC
+dis_lr_ma_aic_fit
+```
+
+This is the model selected by minimizing the BIC score.
+
+```{r, message = FALSE, warning = FALSE}
+# Return the selected model based on BIC
+dis_lr_ma_bic_fit
+```
+
+From the time plot of standardized residuals, the residuals do not seem to resemble White Noise because we can see several residuals with very large swings (up to 6 standard deviations away from zero). We can expect heavy tails from the QQ plot as well.
+
+From the ACF plot, we observe that 3 autocorrelations fall outside of the band at lag 6, 7, and 8. Hence, the series is not White Noise.
+
+From the plot of LJung-Box test p-values, the p-values are all significant (<0.05) for lags greater than 6, meaning the series is not White Noise.
+
+```{r, message = FALSE, warning = FALSE, fig.height=8}
+# Output residual diagnostics of the selected model
+tsdiag(dis_lr_ma_aic_fit, gof.lag = 20)
+```
+
+From the QQ plot, we compare the MA(1) residual distribution with normal distribution quantiles. We observe that both the left and right tails of residuals are heavier than normal. This means that the MA(1) residuals follow a distribution with heavier extreme values, like the Student-t distribution.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_ma_aic_fit$residuals)
+qqline(dis_lr_ma_aic_fit$residuals, col = "black", lwd = 2)
+```
+
+We conclude that the performance of the MA(1) model is fairly similar to that of the AR(1) model above. It is not adequate for fitting Disney's daily stock log returns because residuals diagnostics do not provide evidence of White Noise. This model is although parsimonious, can be enhanced.
+
+## Exercise #3: ARIMA(p,d,q) on Disney's Stock
+
+We apply the `auto.arima()` function to select the optimal $p, d, q$ parameters in our ARIMA(p,d,q) model. This function suggests ARIMA(1,0,0) to be the best model that minimizes both the AIC score and BIC scores. This model is equivalent to the ARMA(1,0) and AR(1) processes. The model takes on the mathematical form $Y_{t}=-0.0943Y_{t-1}+\epsilon_{t}$. Other properties and implementations for the model are the same as what was described for the AR(1) model above.
+
+```{r, message = FALSE, warning = FALSE}
+# Select AIMA(p,d,q) model based on AIC 
+dis_lr_arima_aic_fit = auto.arima(dis_lr, stepwise = FALSE, approximation = FALSE, ic = 'aic')
+# Select AIMA(p,d,q) model based on BIC 
+dis_lr_arima_aic_fit = auto.arima(dis_lr, stepwise = FALSE, approximation = FALSE, ic = 'bic')
+```
+
+This is the model selected by minimizing the AIC score.
+
+```{r, message = FALSE, warning = FALSE}
+# Return the selected model based on AIC
+dis_lr_arima_aic_fit
+```
+
+This is the model selected by minimizing the BIC score.
+
+```{r, message = FALSE, warning = FALSE}
+# Return the selected model based on BIC
+dis_lr_arima_aic_fit
+```
+
+Residual diagnostics from the ARIMA(1,0,0) model are concluded in the same way as that for the AR(1) model above. In other words, we do not consider the model residuals as a White Noise process.
+
+```{r, message = FALSE, warning = FALSE, fig.height=8}
+# Output residual diagnostics of the selected model
+tsdiag(dis_lr_ma_aic_fit, gof.lag = 20)
+```
+
+QQ plot of the ARIMA(1,0,0) residuals, again, shows heavier-than-normal tail values that can be modeled with thicker-tailed distributions such as the Student-t distribution.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_ma_aic_fit$residuals)
+qqline(dis_lr_ma_aic_fit$residuals, col = "black", lwd = 2)
+```
+
+We draw the same conclusion for both the ARIMA(1,0,0) and AR(1) models, that they are  not adequate for fitting Disney's daily stock log returns because residuals diagnostics do not provide evidence of White Noise. These models, although parsimonious, can be enhanced.
+
+## Exercise #4: ARCH(p) on Disney's Stock
+
+In reality, the stock market is observed to have a time-varying volatility rather than a constant one. To account for this phenomenon, an ARCH(p) process is performed on Disney's daily stock log returns.
+
+We use the `garch()` function to configure ARCH models. We will see later that the ARCH(p) model is the reduced version of the GARCH(p,q) model. 
+
+### Try ARCH(1)...
+
+We start by fitting an ARCH(1) model. We obtain the model by setting `order = c(0,1)` as 0 corresponds to the GARCH part and 1 corresponds to the ARCH part. We leave `coef = NULL` for the algorithm to estimate the coefficients; `itmax = 200` allows the log-likelihood function to evaluate up to 200 times when estimating coefficients; `eps = NULL` for the algorithm to estimate the $\{\epsilon_t\}$; `trace = FALSE` prevents all models fitted to be printed.
+
+From the residual statistics, the median residual is around 0, which is a reasonable value for daily stock log returns. The maximum residual value is 8.04057 and the minimum residual value is -5.63257, meaning that there is a lack of symmetry around 0; specifically the residuals distribution is right-skewed.
+
+From the coefficient estimates, p-value < 0.05, meaning  that the $Y_{t-1}^2$ is significant in explaining model volatility. 
+
+From the Jarque-Bera Test, we see p-value < 0.05 and conclude that residuals are not normally distributed. However, keep in mind that because our sample size is large (1257), the data tends to prove most models wrong, so we can expect the null hypothesis of normal residuals to always be rejected. Hence, we need to also check the QQ plot for the residual tails.
+
+From the LJung-Box Test, we see p-value > 0.05 and conclude that squared residuals are not correlated. This can also be verified through the ACF plot below.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARCH(1) model
+dis_lr_arch1_fit <- garch(dis_lr, order = c(0,1), coef = NULL,
+itmax = 200, eps = NULL, trace = FALSE)
+
+# Model summary
+summary(dis_lr_arch1_fit)
+```
+We plot a time plot to observe the evolution of residuals. The series seems to revert to the mean around 0 but has a non-constant variance. These variations seem to be recurrent and are likely not due to outliers. Hence, we conclude that the residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Time plot of model residuals
+plot(dis_lr_arch1_fit$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+```
+
+The QQ plot shows that the left and right tails of the residuals are heavier than those of a normal distribution, which suggests that both tails are not well-modeled by a normal distribution. On top of the Jerque-Bera Test, it is safe to conclude that residuals are not normally distributed.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_arch1_fit$residuals)
+qqline(dis_lr_arch1_fit$residuals)
+```
+
+In the histogram below, we see some extreme values of the residuals on the left tail up to around -6, and some occurrences of this on the right tail up to around 8. There is some skewness towards the right, leading to some asymmetry of the residuals distribution. This is another evidence of heavier tails, particularly on the right side, compared to a normal distribution. We set `breaks = 50` so that the range of residual values are broken down by 50 bars. You may increase this value to get more granular frequency breakdowns of the residuals. 
+
+```{r, message = FALSE, warning = FALSE}
+
+# Histogram of model residuals
+hist(dis_lr_arch1_fit$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+
+```
+
+The ACF plot suggests the squared residuals to be significantly correlated at lags 2, 3, 8, 11, and 23 at a 0.05 level. There are more than 2 significant autocorrelations so the squared residuals are correlated. This isn't verified in the LJung-Box Test above.
+
+```{r, message = FALSE, warning = FALSE}
+# ACF of model residuals
+n = length(dis_lr_arch1_fit$residuals)
+acf((dis_lr_arch1_fit$residuals[2:n])^2, main = "ACF of Squared Residuals")
+```
+
+We conclude that the ARCH(1) model is not adequate for fitting Disney's daily stock log returns because, firstly, residuals are not White Noise due to non-constant variance; secondly, they are not normally distributed because of their skewness and heavy tails; and thirdly, the squared residuals are correlated.
+
+### Try ARCH(2)...
+
+Let's try fitting an ARCH(2) model. We will keep the `garch()` configurations the same except for setting `order = c(0,2)` as 2 corresponds to the `p` parameter in the ARCH(p) model.
+
+From the residual statistics, the median residual is exactly 0, which is an optimal value. The maximum residual value is 8.5201 and the minimum residual value is -4.6852, meaning that there is a lack of symmetry around 0; specifically the residuals is expected to be right-skewed.
+
+From the coefficient estimates, all p-values < 0.05, meaning  that the $Y_{t-1}^2$ and $Y_{t-2}^2$ are significant in explaining model volatility. 
+
+From the Jarque-Bera Test, we see p-value < 0.05 and conclude that residuals are not normally distributed. However, since we have a large data, we can expect to always get our null hypothesis rejected. Because of this, we need to also check the QQ plot for the residual tails.
+
+From the LJung-Box Test, we see p-value > 0.05 and conclude that squared residuals are not correlated. This can also be verified through the ACF plot below.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARCH(2) model
+dis_lr_arch2_fit <- garch(dis_lr, order = c(0,2), coef = NULL,
+itmax = 200, eps = NULL, trace = FALSE)
+
+# Model summary
+summary(dis_lr_arch2_fit)
+```
+
+We plot a time plot to observe the evolution of residuals. The series seems to revert to the mean around 0 and has some non-constant variance. Therefore, the residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Time plot of model residuals
+plot(dis_lr_arch2_fit$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+```
+
+The QQ plot shows that the left and right tails of the residuals are heavier than those of a normal distribution, which suggests that both tails are not well-modeled by a normal distribution. On top of the Jerque-Bera Test, it is safe to conclude that residuals are not normally distribute.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_arch2_fit$residuals)
+qqline(dis_lr_arch2_fit$residuals)
+```
+
+In the histogram below, we see some extreme values of the residuals on the left tail up to around -5, and some occurrences of this on the right tail up to around 8. There is a more obvious skewness towards the right, which guides the asymmetry of the residuals distribution. This is another evidence of heavier tails, particularly on the right side, compared to a normal distribution.
+
+```{r, message = FALSE, warning = FALSE}
+
+# Histogram of model residuals
+hist(dis_lr_arch2_fit$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+
+```
+
+The ACF plot suggests the squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the squared residuals are not correlated. This can also be verified in the LJung-Box Test above.
+
+```{r, message = FALSE, warning = FALSE}
+# ACF of model residuals
+n = length(dis_lr_arch2_fit$residuals)
+acf((dis_lr_arch2_fit$residuals[3:n])^2, main = "ACF of Squared Residuals")
+```
+
+We conclude that the ARCH(2) model is not adequate for fitting Disney's daily stock log returns because, firstly, residuals are not White Noise due to non-constant variance; secondly, they are not normally distributed because of their skewness and heavy tails
+
+### Try ARCH(3)...
+
+Let's try fitting an ARCH(3) model. We will keep the `garch()` configurations the same except for setting `order = c(0,3)` as 3 corresponds to the `p` parameter in the ARCH(p) model.
+
+From the residual statistics, the median residual is exactly 0, which is an optimal value. The maximum residual value is 8.8283 and the minimum residual value is -4.8156, meaning that there is a lack of symmetry around 0; specifically the residuals is expected to be right-skewed.
+
+From the coefficient estimates, all p-values < 0.05, meaning  that the $Y_{t-1}^2$, $Y_{t-2}^2$, and $Y_{t-3}^2$ are significant in explaining model volatility. 
+
+From the Jarque-Bera Test, we see p-value < 0.05 and conclude that residuals are not normally distributed. However, since we have a large data, we can expect to always get our null hypothesis rejected. Because of this, we need to also check the QQ plot for the residual tails.
+
+From the LJung-Box Test, we see p-value > 0.05 and conclude that squared residuals are not correlated. This can also be verified through the ACF plot below.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARCH(3) model
+dis_lr_arch3_fit <- garch(dis_lr, order = c(0,3), coef = NULL,
+itmax = 200, eps = NULL, trace = FALSE)
+
+# Model summary
+summary(dis_lr_arch3_fit)
+```
+
+We plot a time plot to observe the evolution of residuals. The series seems to revert to the mean around 0 and has some non-constant variance. Therefore, the residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Time plot of model residuals
+plot(dis_lr_arch3_fit$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+```
+
+The QQ plot shows that the left and right tails of the residuals are heavier than those of a normal distribution, which suggests that both tails are not well-modeled by a normal distribution. This adds to the conclusion from the Jerque-Bera Test that residuals are not normally distributed.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_arch3_fit$residuals)
+qqline(dis_lr_arch3_fit$residuals)
+```
+
+In the histogram below, we see some extreme values of the residuals on the left tail up to around -5, and some occurrences of this on the right tail up to around 9. There is a more obvious skewness towards the right, which guides the asymmetry of the residuals distribution. This is another evidence of heavier tails, particularly on the right side, compared to a normal distribution.
+
+```{r, message = FALSE, warning = FALSE}
+# Histogram of model residuals
+hist(dis_lr_arch3_fit$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+```
+
+The ACF plot suggests the squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the squared residuals are not correlated. This can also be verified in the LJung-Box Test above.
+
+```{r, message = FALSE, warning = FALSE}
+# ACF of model residuals
+n = length(dis_lr_arch3_fit$residuals)
+acf((dis_lr_arch3_fit$residuals[4:n])^2, main = "ACF of Squared Residuals")
+```
+
+We conclude that the ARCH(3) model is not adequate for fitting Disney's daily stock log returns because, firstly, residuals are not White Noise due to non-constant variance; secondly, they are not normally distributed because of their skewness and heavy tails
+
+### Try ARCH(4)...
+
+Let's try fitting an ARCH(4) model. We will keep the `garch()` configurations the same except for setting `order = c(0,4)` as 4 corresponds to the `p` parameter in the ARCH(p) model.
+
+From the residual statistics, the median residual is exactly 0, which is an optimal value. The maximum residual value is 9.1586 and the minimum residual value is -4.1974, meaning that there is a lack of symmetry around 0; specifically the residuals is expected to be right-skewed.
+
+From the coefficient estimates, all p-values < 0.05, meaning  that the $Y_{t-1}^2$, $Y_{t-2}^2$, $Y_{t-3}^2$, and $Y_{t-4}^2$ are significant in explaining model volatility. 
+
+From the Jarque-Bera Test, we see p-value < 0.05 and conclude that residuals are not normally distributed. However, since we have a large data, we can expect to always get our null hypothesis rejected. Because of this, we need to also check the QQ plot for the residual tails.
+
+From the LJung-Box Test, we see p-value > 0.05 and conclude that squared residuals are not correlated. This can also be verified through the ACF plot below.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARCH(4) model
+dis_lr_arch4_fit <- garch(dis_lr, order = c(0,4), coef = NULL,
+itmax = 200, eps = NULL, trace = FALSE)
+
+# Model summary
+summary(dis_lr_arch4_fit)
+```
+
+We plot a time plot to observe the evolution of residuals. The series seems to revert to the mean around 0 and has some non-constant variance. Therefore, the residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Time plot of model residuals
+plot(dis_lr_arch4_fit$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+```
+
+The QQ plot shows that the left and right tails of the residuals are heavier than those of a normal distribution, which suggests that both tails are not well-modeled by a normal distribution. This adds to the conclusion from the Jerque-Bera Test that residuals are not normally distributed.
+
+```{r, message = FALSE, warning = FALSE}
+# QQ plot of model residuals
+qqnorm(dis_lr_arch4_fit$residuals)
+qqline(dis_lr_arch4_fit$residuals)
+```
+
+In the histogram below, we see some extreme values of the residuals on the left tail up to around -4, and some occurrences of this on the right tail up to around 9. There is a more obvious skewness towards the right, which guides the asymmetry of the residuals distribution. This is another evidence of heavier tails, particularly on the right side, compared to a normal distribution.
+
+```{r, message = FALSE, warning = FALSE}
+# Histogram of model residuals
+hist(dis_lr_arch4_fit$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+```
+
+The ACF plot suggests the squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the squared residuals are not correlated. This can also be verified in the LJung-Box Test above.
+
+```{r, message = FALSE, warning = FALSE}
+# ACF of model residuals
+n = length(dis_lr_arch4_fit$residuals)
+acf((dis_lr_arch3_fit$residuals[4:n])^2, main = "ACF of Squared Residuals")
+```
+
+We conclude that the ARCH(4) model is not adequate for fitting Disney's daily stock log returns because, firstly, residuals are not White Noise due to non-constant variance; secondly, they are not normally distributed because of their skewness and heavy tails
+
+Overall, we fitted 4 ARCH(p) models on Disney's daily stock log returns. The model performance improved from ARCH(1) to ARCH(2). Particularly, the squared residuals become uncorrelated. From ARCH(2) to ARCH(3), there is no major improvement as the residuals series is still not normally distributed and not a White Noise. From ARCH(3) to ARCH(4), the problem with residuals non-normality and nonstationarity still persists. 
+
+At this point, increasing p, will just complicate the model as little to no progress is being made on improving the residual distribution fits. We will see later that a GARCH(p,q) model can assume a heavier-tailed distribution on residuals, like a Student-t distribution, which will solve such problem.
+
+## Exercise #5: GARCH(p,q) on Disney's Stock
+
+We expand the ARCH(p) model into a GARCH(p,q) model so that the errors/ residuals/ external information with a heavy tail can be modeled properly. 
+
+We use the `garchFit()` function to configure GARCH models. We will see later how we can also incorporate ARMA components in GARCH.
+
+### Try GARCH(1,1) with Normal Innovations...
+
+We start by fitting an GARCH(1,1) model with normal innovations. We obtain the model by setting `~garch(1,1)`. We set `cond.dist = c("norm")` to assume normal innovations. `include.mean = FALSE` directs the model to assume 0 mean, which is what we want; `algorithm = c("nlminb")` and `hessian = c("ropt")` are calculation and optimization methods for coefficient estimates in the model; `trace = FALSE` prevents all models fitted to be printed.
+
+From the Error Analysis, the p-values for the coefficient estimates, $\alpha_1$ and $\beta_1$ are < 0.05, meaning that $Y_{t-1}^2$ and $\sigma_{t-1}^2$ are significant in explaining model volatility. 
+
+From the Standardized Residuals Tests, Jarque-Bera Test and Shapiro-Wilk Test both have p-values < 0.05, indicating that the standardized residuals are not normally distributed, although we assumed normal innovations here. However, keep in mind that because our sample size is large (1257), the data tends to prove most models wrong, so we can expect the null hypothesis of normal residuals to always be rejected. Hence, we need to also check the QQ plot for the residual tails. The first 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized residuals are not correlated. The last 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized squared residuals are not correlated. This can also be verified through the ACF plot below.
+
+From the Information Criterion Statistics, BIC = -5.257137, which is higher than what's calculated for the GARCH(1,1) model with Student-t innovations. This indicates that GARCH(1,1) with normal innovations doesn't have the best goodness of fit.
+
+```{r, message = FALSE, warning = FALSE}
+# Try GARCH(1,1) model with normal innovations
+garch11_norm = garchFit(~garch(1,1), data= dis_lr,
+cond.dist = c("norm"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+
+# Model summary
+summary(garch11_norm)
+```
+
+The GARCH model stores the log return volatility estimates in `dis_lr_garch11_fit@sigma.t`. These are the estimated values of $\sigma_{t}, \sigma_{t-1}, ..., \sigma_{t-p}$ from the model. We plot a time plot of the volatility estimates overlaying the log return series and observe that the volatility estimates don't capture the swings with large magnitudes very well, especially especially from 2019 to 2021.
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated volatility values
+garch11_norm_vol = garch11_norm@sigma.t
+
+# Estimated volatility time plot
+qplot(index(dis_lr), dis_lr, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with Normal Innovations", geom = "line")+geom_line(data = as.data.frame(garch11_norm_vol), aes(y=garch11_norm_vol), color = "red")+geom_line(data = as.data.frame(-garch11_norm_vol), aes(y=-garch11_norm_vol), color = "red")
+```
+
+The GARCH model also stores the estimated residuals in `dis_lr_garch11_fit@residuals`. These are the estimated values of $\epsilon_{t}, \epsilon_{t-1}, ..., \epsilon_{t-p}$ from the model. The standardized residuals (innovations) are calculated via the formula $\frac{\text{estimated residuals}}{\text{estimated volatility}}$, and is obtained through `dis_lr_garch11_fit@residuals/dis_lr_garch11_vol`. From the time plot of the standardized residuals, we see that the series is mean-reverting but has times when its variance are not constant. Therefore, the standardized residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated standardized residuals (innovations)
+garch11_norm_sres = garch11_norm@residuals / garch11_norm_vol
+
+# Estimated standardized residuals time plot
+qplot(index(dis_lr), garch11_norm_sres, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with Normal Assumption", geom = "line")
+```
+
+From the histogram below, standardized residuals are slightly right-skewed, potentially due to outliers. A normal distribution curve doesn't seem to trace the density bars very well as it underfits the peak.
+
+The QQ plot shows that the left and right tails of the standardized residuals are heavier than those of a normal distribution, which suggests that both tails are not well-modeled by a normal distribution. This adds to the conclusion from the Jerque-Bera Test and histogram that standardized residuals are not normally distributed.
+
+```{r, message = FALSE, warning = FALSE, fig.width = 15}
+# Histogram of standardized residuals
+garch11_norm_sres_hist <- ggplot(as.data.frame(garch11_norm_sres), aes(x=garch11_norm_sres))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', y = 'Density', title="GARCH(1,1) Standardized Residuals Histogram with Normal Assumption")+ stat_function(fun = dnorm)
+
+# QQ plot of standardized residuals
+garch11_norm_sres_qq <- ggplot(as.data.frame(garch11_norm_sres), aes(sample=garch11_norm_sres))+ stat_qq(distribution = qnorm) + stat_qq_line(distribution = qnorm)+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized  Residuals QQ Plot with Normal Fit") # use ggplot to set the distribution fit
+
+# Arrange histogram and qq plot side by side
+grid.arrange(garch11_norm_sres_hist, garch11_norm_sres_qq, ncol=2)
+```
+
+The ACF plot suggests the standardized squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the standardized squared residuals are not correlated. This can also be verified via the LJung-Box Tests above. You may have observed already that the 0th lag of a series is the current time point and is always perfectly correlated with itself; that's why the 0th lag autocorrelation is always 1. We used the `ggAcf()` function to omit the 0th lag autocorrelation and zoom in on the other lags. 
+
+```{r, message = FALSE, warning = FALSE}
+ggAcf(garch11_norm_sres^2) + labs(title="GARCH(1,1) ACF of Standardized Squared Residuals with Normal Assumption")
+```
+
+### Try GARCH(1,1) with Student-t Innovations...
+
+Let's try fitting an GARCH(1,1) model with Student-t innovations. We obtain this model by setting `cond.dist = c("std")` to assume Student-t innovations and keeping the other `garchFit()` configurations to be the same.
+
+From the Error Analysis, the p-values for the coefficient estimates, $\alpha_1$ and $\beta_1$ are < 0.05, meaning that $Y_{t-1}^2$ and $\sigma_{t-1}^2$ are significant in explaining model volatility. 
+
+From the Standardized Residuals Tests, Jarque-Bera Test and Shapiro-Wilk Test both have p-values < 0.05, indicating that the standardized residuals are not normally distributed. This makes sense because we assume Student-t innovations here. The first 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized residuals are not correlated. The last 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized squared residuals are not correlated.
+
+From the Information Criterion Statistics, BIC = -5.454286, which is lower than what's calculated for the GARCH(1,1) model with normal innovations. This indicates that GARCH(1,1) with Student-t innovations is a better-fitted model.
+
+```{r, message = FALSE, warning = FALSE}
+# Try GARCH(1,1) model with Student-t innovations
+garch11_std = garchFit(~garch(1,1), data= dis_lr,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+
+# Model summary
+summary(garch11_std)
+```
+
+We plot a time plot of the volatility estimates overlaying the log return series and observe that the volatility estimates don't capture the swings with large magnitudes very well, especially especially from 2019 to 2021.
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated volatility values
+garch11_std_vol = garch11_std@sigma.t
+
+# Estimated volatility time plot
+qplot(index(dis_lr), dis_lr, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with Student-t Innovations", geom = "line")+geom_line(data = as.data.frame(garch11_std_vol), aes(y=garch11_std_vol), color = "red")+geom_line(data = as.data.frame(-garch11_std_vol), aes(y=-garch11_std_vol), color = "red")
+```
+
+From the time plot of the standardized residuals, we see that the series is mean-reverting but has nonconstant variance. Therefore, the standardized residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated standardized residuals (innovations)
+garch11_std_sres = garch11_std@residuals / garch11_std_vol
+
+# Estimated standardized residuals time plot
+qplot(index(dis_lr), garch11_std_sres, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with Student-t Assumption", geom = "line")
+```
+
+From the histogram below, standardized residuals are slightly right-skewed, potentially due to outliers. A Student-t distribution curve seems to trace the density bars fairly well because it traces the shape of the histogram closely.
+
+The QQ plot shows that the right tail of the standardized residuals are heavier than that of a Student-t distribution. These extreme values may be what's causing the outliers to appear in the histogram.
+
+```{r, message = FALSE, warning = FALSE, fig.width = 15}
+# Estimate shape parameter of the model (needed for Student-t fit)
+nu <- coef(garch11_std)[['shape']]
+
+# Histogram of standardized residuals
+garch11_std_sres_hist <- ggplot(as.data.frame(garch11_std_sres), aes(x=garch11_std_sres))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', title="GARCH(1,1) Standardized Residuals Histogram with Student-t Assumption")+ stat_function(fun = dstd, args = list(nu=nu))
+
+# QQ plot of standardized residuals
+garch11_std_sres_qq <- ggplot(as.data.frame(garch11_std_sres), aes(sample=garch11_std_sres))+ stat_qq(distribution = qstd, dparams=list(nu=nu)) + stat_qq_line(distribution = qstd, dparams=list(nu=nu))+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized Residuals QQ Plot with Student-t Fit") # use ggplot to set the distribution fit
+
+# Arrange histogram and qq plot side by side
+grid.arrange(garch11_std_sres_hist, garch11_std_sres_qq, ncol=2)
+```
+
+The ACF plot suggests the standardized squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the standardized squared residuals are not correlated.
+
+```{r, message = FALSE, warning = FALSE}
+ggAcf(garch11_std_sres^2) + labs(title="GARCH(1,1) ACF of Standardized Squared Residuals with Student-t Assumption")
+```
+
+### Try GARCH(1,1) with GED Innovations...
+
+Let's try fitting an GARCH(1,1) model with GED innovations. We obtain this model by setting `cond.dist = c("ged")` to assume GED innovations and keeping the other `garchFit()` configurations to be the same.
+
+From the Error Analysis, the p-values for the coefficient estimates, $\alpha_1$ and $\beta_1$ are < 0.05, meaning that $Y_{t-1}^2$ and $\sigma_{t-1}^2$ are significant in explaining model volatility. 
+
+From the Standardized Residuals Tests, Jarque-Bera Test and Shapiro-Wilk Test both have p-values < 0.05, indicating that the standardized residuals are not normally distributed. This makes sense because we assume GED innovations here. The first 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized residuals are not correlated. The last 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized squared residuals are not correlated.
+
+From the Information Criterion Statistics, BIC = -5.428917, which is higher than what's calculated for the GARCH(1,1) model with Student-t innovations. This indicates that GARCH(1,1) with GED innovations doesn't have the best goodness of fit.
+
+```{r, message = FALSE, warning = FALSE}
+# Try GARCH(1,1) model with GED innovations
+garch11_ged = garchFit(~garch(1,1), data= dis_lr,
+cond.dist = c("ged"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+
+# Model summary
+summary(garch11_ged)
+```
+
+We plot a time plot of the volatility estimates overlaying the log return series and observe that the volatility estimates don't capture the swings with large magnitudes very well, especially especially from 2019 to 2021.
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated volatility values
+garch11_ged_vol = garch11_ged@sigma.t
+
+# Estimated volatility time plot
+qplot(index(dis_lr), dis_lr, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with GED Innovations", geom = "line")+geom_line(data = as.data.frame(garch11_ged_vol), aes(y=garch11_ged_vol), color = "red")+geom_line(data = as.data.frame(-garch11_ged_vol), aes(y=-garch11_ged_vol), color = "red")
+```
+
+From the time plot of the standardized residuals, we see that the series is mean-reverting but has nonconstant variance. Therefore, the standardized residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated standardized residuals (innovations)
+garch11_ged_sres = garch11_ged@residuals / garch11_std_vol
+
+# Estimated standardized residuals time plot
+qplot(index(dis_lr), garch11_ged_sres, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with GED Assumption", geom = "line")
+```
+
+From the histogram below, standardized residuals are slightly right-skewed, potentially due to outliers. A GED distribution curve doesn't seem to trace the density bars very well as it overfits the peak.
+
+The QQ plot shows that the left and right tails of the standardized residuals are lighter than those of a GED, which suggests that both tails are not well-modeled by a GED.
+
+```{r, message = FALSE, warning = FALSE, fig.width = 15}
+# Estimate shape parameter of the model (needed for Student-t fit)
+kappa = kurtosis(garch11_ged_sres, method = 'excess')[1]
+nu_grid = seq(0.5, 2, 0.001) # generate possible values of nu
+kappas = (gamma(5 / nu_grid) * gamma(1 / nu_grid) / gamma(3 / nu_grid^2))- 3 # possible values of kappa
+nu= nu_grid[which.min(kappas > kappa)] # estimate of nu
+
+# Histogram of standardized residuals
+garch11_ged_sres_hist <- ggplot(as.data.frame(garch11_ged_sres), aes(x=garch11_ged_sres))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', title="GARCH(1,1) Standardized Residuals Histogram with GED Assumption")+ stat_function(fun = dged, args = list(nu=nu))
+
+# QQ plot of standardized residuals
+garch11_ged_sres_qq <- ggplot(as.data.frame(garch11_ged_sres), aes(sample=garch11_ged_sres))+ stat_qq(distribution = qged, dparams=list(nu=nu)) + stat_qq_line(distribution = qged, dparams=list(nu=nu))+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized Residuals QQ Plot with GED Fit") # use ggplot to set the distribution fit
+
+# Arrange histogram and qq plot side by side
+grid.arrange(garch11_ged_sres_hist, garch11_ged_sres_qq, ncol=2)
+```
+
+The ACF plot suggests the standardized squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the standardized squared residuals are not correlated.
+
+```{r, message = FALSE, warning = FALSE}
+ggAcf(garch11_ged_sres^2) + labs(title="GARCH(1,1) ACF of Standardized Squared Residuals with GED Assumption")
+```
+
+Out of the three models, GARCH(1,1) with Student-t innovations has the best BIC score, and its standardized residuals are most closely fitted using the Student-t distribution. We use this as our baseline model. Next, we will tune the p and q parameters in GARCH(p,q) to seek for any better-suited models, assuming Student-t innovations.  
+
+### Try Other GARCH(p,q) with Student-t Innovations…
+
+We tune the p and q parameters in the GARCH(p,d) model, particularly, using `for` loops to iterate through different parameter combinations. We allow testing up to p = 4 and q = 4 as anything above that tends to complicate the model. 
+
+```{r, message = FALSE, warning = FALSE}
+# The range of GARCH p and q orders to test
+p_param <- 1:4
+q_param <- 1:4
+
+# Create an empty data frame to store information criterion scores
+GARCH_ICs <- data.frame("Model" = character(), 
+                        "AIC" = double(), 
+                        "BIC" = double())
+
+# Populate the date frame
+for (p in p_param){
+  for (q in q_param){
+    garch_std <- garchFit(substitute(~garch(sigma_p,arch_q), list(sigma_p=p, arch_q=q)), data = dis_lr, cond.dist = c("std"), include.mean = FALSE, algorithm = c("nlminb"), hessian = c("ropt"), trace = FALSE)
+    GARCH_ICs[nrow(GARCH_ICs) + 1,] <- c(paste0('GARH(', p, ',', q, ')'), garch_std@fit$ics[1], garch_std@fit$ics[2])
+  }
+}
+
+# Output score table, sorted by lowest to highest BIC
+kable(GARCH_ICs[order(GARCH_ICs$BIC,decreasing=TRUE),], col.names = names(GARCH_ICs))
+```
+
+We see that GARCH(1,1) with Student-t innovations has the lowest BIC score of -5.4543 and therefore is the best model to fit our log return series. We select the GARCH(1,1) as our forecasting model.
+
+## Exercise #6: ARMA(p,q)-GARCH(p,q) on Disney's Stock
+
+An extension to GARCH(p) model is the ARMA(p,q)-GARCH(p,q) model, where residual correlations are captured and volatility clustering  is accommodated. We will keep using the `garchFit()` function to configure the ARMA-GARCH models.
+
+Since GARCH(1,1) with Student-t innovations is selected as the best model, we incorporate an ARMA component into this model by setting `~arma(p,q)+garch(1,1)`, and keep the other `garchFit()` configurations the same. We tune the p and q parameters in the ARMA(p,q) part of the ARMA(p,q)-GARCH(p,q) model, particularly, using `for` loops to iterate through different parameter combinations. We allow testing up to p = 4 and q = 4 as anything above that tends to complicate the model. 
+
+```{r, message = FALSE, warning = FALSE}
+# The range of ARMA p and q orders to test
+p_param <- 0:4
+q_param <- 0:4
+
+# Create an empty data frame to store information criterion scores
+ARMA_GARCH_ICs <- data.frame("Model" = character(), 
+                        "AIC" = double(), 
+                        "BIC" = double())
+
+# Populate the date frame
+for (p in p_param){
+  for (q in q_param){
+    arma_garch_std <- garchFit(substitute(~arma(arma_p, arma_q)+garch(1,1), list(arma_p=p, arma_q=q)), data = dis_lr, cond.dist = c("std"), include.mean = FALSE, algorithm = c("nlminb"), hessian = c("ropt"), trace = FALSE)
+    ARMA_GARCH_ICs[nrow(ARMA_GARCH_ICs) + 1,] <- c(paste0('ARMA(', p, ',', q, ')-GARCH(1,1)'), arma_garch_std@fit$ics[1], arma_garch_std@fit$ics[2])
+  }
+}
+
+# Output score table, sorted by BIC from lowest to highest
+kable(ARMA_GARCH_ICs[order(ARMA_GARCH_ICs$AIC,decreasing=TRUE),], col.names = names(ARMA_GARCH_ICs))
+
+```
+
+We see that the pure GARCH(1,1) with Student-t innovations has the lowest BIC score of -5.4543 and therefore is the best model to fit our log return series. We select the pure GARCH(1,1) as our forecasting model. 
+
+However, this doesn't mean that other models are not plausible. For instance, ARMA(0,1)-GARCH(1,1) can be used to account for 1-lag external market information. An example is that during COVID-19 in 2020, Disney gained a pervasive media coverage on the services it provided (e.g., Disney+), hence it is reasonable to incorporate such effect through the moving average part (q) of the ARMA(p,q) component in our model. In fact, this model aligns with reality closer if our perception of Disney here is correct.
+
+From the model summary of ARMA(0,1)-GARCH(1,1), we observe a p-value = 0.11170 > 0.05 for $\epsilon_{t-1}$ in the ARMA model, meaning that it is insignificant to explaining the log returns. In this case, we would rather use the pure GARCH(1,1) which all the coefficients show significance.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARMA(0,1)-GARCH(1,1) model with Student-t innovations
+arma01garch11_std = garchFit(~arma(0,1)+garch(1,1), data= dis_lr,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+
+# Model summary
+summary(arma01garch11_std)
+```
+
+ARMA(1,0)-GARCH(1,1) can be also be used to account for 1-lag log return. During the course of the pandemic, log returns of a few consecutive days can cluster, and hence depend on their past values, hence it is reasonable to incorporate such effect through the autoregressive part (p) of the ARMA(p,q) component in our model. In fact, this model aligns with reality closer if our perception of Disney here is correct.
+
+From the model summary of ARMA(0,1)-GARCH(1,1), we observe a p-value = 0.12005 > 0.05 for $X_{t-1}$ in the ARMA model, meaning that it is insignificant to explaining the log returns. In this case, we would rather use the pure GARCH(1,1) which all the coefficients show significance.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARMA(1,0)-GARCH(1,1) model with Student-t innovations
+arma10garch11_std = garchFit(~arma(1,0)+garch(1,1), data= dis_lr,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+
+# Model summary
+summary(arma10garch11_std)
+```
+
+For me, personally, I try to example simpler models first, models with p, q orders < 2. More complex models have higher risk of overfitting your data. If you are comforatable with this risk, you can examine the ARMA(0,3)-GARCH(1,1) and ARMA(3,0)-GARCH(1,1) models. 
+
+I will examine the ARMA(1,1)-GARCH(1,1) model here. This model can be used to account for 1-lag log return and external market information. For example, trading during earnings release dates can be very volatile because market returns tend to react to the earnings release; at the same time, there are some return information from the past can seep into the current return. This is a good time to incorporate such effect through both the autoregressive (p) and the moving average (q) parts of the ARMA(p,q) component in our model. In fact, this model aligns with reality closer if our perception of Disney here is correct.
+
+From the Error Analysis, the p-values for the coefficient estimates are all < 0.05, meaning that $Y_{t-1}$, $\epsilon_{t-1}$, $Y_{t-1}^2$, and $\sigma_{t-1}^2$ are significant in explaining model volatility and log returns. 
+
+From the Standardized Residuals Tests, Jarque-Bera Test and Shapiro-Wilk Test both have p-values < 0.05, indicating that the standardized residuals are not normally distributed. This makes sense because we assume Student-t innovations here. The first 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized residuals are not correlated. The last 3 Ljung Box Tests yield p-values >  0.05, implying that the standardized squared residuals are not correlated.
+
+From the Information Criterion Statistics, BIC = -5.447477, which is ranked the 6th place among the ARMA(p,q)-GARCH(1,1) we tested. Whether to sacrifice model BIC for model reality strongly depends on your perception of the market at the time. I personally believe, at the time of writing, that both volatility clusters and external market information are important for explaining future stock movements.
+
+```{r, message = FALSE, warning = FALSE}
+# Try ARMA(1,1)-GARCH(1,1) model with Student-t innovations
+arma11garch11_std = garchFit(~arma(1,1)+garch(1,1), data= dis_lr,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+
+# Model summary
+summary(arma11garch11_std)
+```
+
+We plot a time plot of the volatility estimates overlaying the log return series and observe that the volatility estimates still don't capture the swings with large magnitudes very well, especially especially from 2019 to 2021.
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated volatility values
+arma11garch11_std_vol = arma11garch11_std@sigma.t
+
+# Estimated volatility time plot
+qplot(index(dis_lr), dis_lr, ylab="Log Returns", xlab="Date", main="ARMA(1,1)-GARCH(1,1) Estimated Volatilities with Student-t Innovations", geom = "line")+geom_line(data = as.data.frame(arma11garch11_std_vol), aes(y=arma11garch11_std_vol), color = "red")+geom_line(data = as.data.frame(-arma11garch11_std_vol), aes(y=-arma11garch11_std_vol), color = "red")
+```
+
+From the time plot of the standardized residuals, we see that the series is mean-reverting but has nonconstant variance. Therefore, the standardized residuals are nonstationary, and in turn, not a White Noise. 
+
+```{r, message = FALSE, warning = FALSE}
+# Estimated standardized residuals (innovations)
+arma11garch11_std_sres = arma11garch11_std@residuals / arma11garch11_std_vol
+
+# Estimated standardized residuals time plot
+qplot(index(dis_lr), arma11garch11_std_sres, ylab="Standardized Residuals", xlab="Date", main="ARMA(1,1)-GARCH(1,1) Standardized Residuals with Student-t Assumption", geom = "line")
+```
+
+From the histogram below, standardized residuals are slightly right-skewed, potentially due to outliers. A Student-t distribution curve seems to trace the density bars fairly well because it traces the shape of the histogram closely.
+
+The QQ plot shows that the right tail of the standardized residuals are heavier than that of a Student-t distribution. These extreme values may be what's causing the outliers to appear in the histogram.
+
+```{r, message = FALSE, warning = FALSE, fig.width = 15}
+# Estimate shape parameter of the model (needed for Student-t fit)
+nu <- coef(arma11garch11_std)[['shape']]
+
+# Histogram of standardized residuals
+arma11garch11_std_sres_hist <- ggplot(as.data.frame(arma11garch11_std_sres), aes(x=arma11garch11_std_sres))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', title="ARMA(1,1)-GARCH(1,1) Standardized Residuals Histogram with Student-t Assumption")+ stat_function(fun = dstd, args = list(nu=nu))
+
+# QQ plot of standardized residuals
+arma11garch11_std_sres_qq <- ggplot(as.data.frame(arma11garch11_std_sres), aes(sample=arma11garch11_std_sres))+ stat_qq(distribution = qstd, dparams=list(nu=nu)) + stat_qq_line(distribution = qstd, dparams=list(nu=nu))+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="ARMA(1,1)-GARCH(1,1) Standardized Residuals QQ Plot with Student-t Fit") # use ggplot to set the distribution fit
+
+# Arrange histogram and qq plot side by side
+grid.arrange(arma11garch11_std_sres_hist, arma11garch11_std_sres_qq, ncol=2)
+```
+
+
+The ACF plot suggests the standardized squared residuals to be significantly correlated at lag 23 at a 0.05 level. There are less than 2 significant autocorrelations so the standardized squared residuals are not correlated.
+
+```{r, message = FALSE, warning = FALSE}
+ggAcf(arma11garch11_std_sres^2) + labs(title="ARMA(1,1)-GARCH(1,1) ACF of Standardized Squared Residuals with Student-t Assumption")
+```
+
+Out of the four models with Student-t innovations: GARCH(1,1), ARMA(0,1)-GARCH(1,1), ARMA(1,0)-GARCH(1,1), and ARMA(1,1)-GARCH(1,1), only GARCH(1,1) and ARMA(1,1)-GARCH(1,1) possess significant coefficient estimates. The volatility estimates and residual diagnostics between the two models are very similar. So, which model shall we use? 
+
+If you wouldn't mind sacrificing a little BIC score for including your perception of reality into the model, then ARMA(1,1)-GARCH(1,1) would be a proper choice. This model is more flexible, and can catch more detailed patterns in a series. If you are a believer of the principle of parsimony, then GARCH(1,1) would be a proper choice. This model is simpler, and is easier to interpret. I belong to the prior group and will choose ARMA(1,1)-GARCH(1,1) as my forecasting model.
+
+### ARMA(1,1)-GARCH(1,1) with Student-t Innovations Quarterly Forecast
+
+From a 73-day ahead forecast, the slowing expansion at boundaries of the predicted series at a 5% significance level means that the volatility in the next quarter is predicted to increase at a progressively slower rate, with a 5% error.
+
+```{r, message = FALSE, warning = FALSE}
+# Number of days you want to forecast
+h <- 73
+# Output score table, sorted by BIC from lowest to highest
+arma11garch11_std_forecast <- predict(arma11garch11_std, n.ahead = h, plot=TRUE, nx=length(dis_lr))
+```
+
+## Exercise #7: Relative Value-at-Risk (rVaR) and Relative Expected Shortfall (rES) of Disney's Stock
+
+To calculate the rVaR, we need to have an estimate of the distribution of the log returns in the next trading day. In the case of Student-t innovations, the mean and degrees of freedom estimate, $\hat{\mu}$ and $\hat{\nu}$, can be read off from the output of the `garchFit()` function. In order to estimate standard deviation or volatility, $\hat{\sigma}_{t+1}$, on that day, we can use the function `predict(arma11garch11_std, 1)` to find a one-day ahead prediction of volatility.
+
+The rVaR for the Normal distribution, Student-t distribution, and GED at $\alpha$ significance levels are calculated using the following formulas:
+<ul>
+  <li>$rVaR_{Normal} = 1-e^{\hat{\mu}+\hat{\sigma_{t+1}}F_{Normal}^{-1}(\alpha)}$, where $F_{Normal}$ is the CDF of the Standard Normal distribution</li>
+  <li>$rVaR_{Student-t} = 1-e^{\hat{\mu}+\hat{\sigma_{t+1}}\sqrt{\frac{\hat{\nu}-2}{\hat{\nu}}}F_{t_{\hat{\nu}}}^{-1}(\alpha)}$, where $F_{t_{\hat{\nu}}}$ is the CDF of the classical Student-t distribution on
+$\hat{\nu}$ degrees of freedom</li>
+  <li>$rVaR_{GED} = 1-e^{\hat{\mu}+\hat{\sigma_{t+1}}F_{GED_{\hat{\nu}}}^{-1}(\alpha)}$, where $F_{GED_{\hat{\nu}}}$ is the CDF of the Generalized Error Distribution (GED) on $\hat{\nu}$ degrees of freedom</li>
+</ul>
+
+To calculate the rES, we first use Monte Carlo simulation to generate 10 million daily losses that assume the mean, degrees of freedom, and standard deviation estimates of the ARMA(1,1)-GARCH(1,1) model with Student-t innovations. Then, we find all the simulated losses that are above the rVaR value and then take their mean. **Since the simulation is randomized, we can expect a different but similar rES value on each run.**
+
+Below is a risk table displaying the rVaR and rES values calculated from ARMA(1,1)-GARCH(1,1) with Student-t innovations. For example, at a 0.05x100% = 5% significance level, rVaR = 0.0250635 means that there is a 5% probability that Disney's stock will lose at least 2.51% in the next trading day; rES = 0.0382942 means that there is a 5% probability that given at least a 2.51% loss in Disney's stock, it is expected to lose an average of 3.83% in the next trading day.
+
+```{r, message = FALSE, warning = FALSE}
+# Compute estimated volatility
+arma11garch11_std_est <- predict(arma11garch11_std, n.ahead = 1)
+
+# Mean forecast
+arma11garch11_std_mu = arma11garch11_std_est$meanForecast
+
+# Degrees of freedom forecast
+arma11garch11_std_nu <- coef(arma11garch11_std)[['shape']]
+
+# Standard deviation forecast
+arma11garch11_std_sigma = arma11garch11_std_est$standardDeviation
+
+# Create an empty data frame to store rVaR and rES results
+risk_df <- data.frame("Significance.Level" = double(), 
+                        "rVaR" = double(), 
+                        "rES" = double())
+
+# Probability of loss (significance level)
+alpha_c = c(0.01, 0.05, 0.1)
+
+# Number of Monte Carlo samples for generation
+N=1e7
+
+# Simulate 10 million losses based on Student-t estimates
+arma11garch11_std_simLoss = -(exp(rstd(N, mean=arma11garch11_std_mu, sd=arma11garch11_std_sigma, nu = arma11garch11_std_nu))-1)
+
+# For loop to populate risk table
+for(a in alpha_c){
+  # Calculate rVaR
+  arma11garch11_std_rVaR = - (exp(arma11garch11_std_mu + arma11garch11_std_sigma * sqrt((arma11garch11_std_nu-2)/arma11garch11_std_nu) * qt(a, df = arma11garch11_std_nu)) - 1)
+  # Calculate rES
+  arma11garch11_std_rES = mean(arma11garch11_std_simLoss[arma11garch11_std_simLoss > arma11garch11_std_rVaR])
+  # Populate risk table at each significance table
+  risk_df[nrow(risk_df) + 1,] <- c(a, arma11garch11_std_rVaR, arma11garch11_std_rES)
+}
+
+# Output risk table
+kable(risk_df, col.names = names(risk_df))
+```

@@ -1,0 +1,502 @@
+---
+title: "Time Series: The Fundamentals"
+# author: "John Lee"
+output:
+  html_document:
+      fig_caption: false
+#     toc: yes
+#     toc_float: yes
+#     theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Objectives
+* Discuss basic motivations for time series analysis.
+* Introduce analysis assumptions for financial data.
+* Define terminologies: market stochasticity, stationarity, etc.
+* Set up general notation of relevant statistics.
+* Introduce the White Noise process.
+
+```{r LoadPackages, echo = FALSE, message = FALSE, warning = FALSE}
+library(quantmod)
+library(purrr)
+library(ggplot2)
+library(forecast)
+library(tseries)
+library(fGarch)
+library(rugarch)
+```
+
+# What is a Time Series?
+We first look at the time plot for the SPY daily price between 8/27/2018 and 8/27/2022. 
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# Store price data as its symbol
+spy = quantmod::getSymbols('SPY', src = "yahoo", from = '2018/08/27', to = '2022/08/27')
+# Use Adjusted prices to price column
+spy <- purrr::reduce(map('SPY', function(x) Ad(get(x))), merge)
+# Change column name to ticker symbol
+colnames(spy)<-gsub("\\..*","",colnames(spy))
+# Plot time series price data
+ggplot2::qplot(index(spy), spy, ylab="Price ($)", xlab="Date", main="SPY Daily Price (2018-08-27 to 2022-08-27)", geom = "line")
+
+```
+
+Let's also look at the time plot for the weekly log returns of the 20+ Year Treasury Bond ETF over the same time period.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# Store price data as its symbol
+tlt = quantmod::getSymbols('TLT', src = "yahoo", from = '2018/08/27', to = '2022/08/27', periodicity  = "weekly")
+# Use Adjusted prices to price column
+tlt <- purrr::reduce(map('TLT', function(x) Ad(get(x))), merge)
+# Change column name to ticker symbol
+colnames(tlt)<-gsub("\\..*","",colnames(tlt))
+# Compute log-return for asset
+lr_tlt <- na.omit(diff(log(tlt)))
+# Plot time series price data
+ggplot2::qplot(index(lr_tlt), lr_tlt, ylab="Log Return", xlab="Date", main="TLT Weekly Log Return (2018-08-27 to 2022-08-27)", geom = "line")
+
+```
+
+Monthly Consumer Price Index (CPI) is often used as a predictor in econometrics and business forecasts, and resonates with the economic conditions from expansion to recession.
+
+![TimeSeries_CPI](../Media/TimeSeries_CPI.png)
+
+A company's quarterly earnings report is one of the utmost important evidence for its financial stability. Its evolution throughout time is what executives and investors look to at before making any financial decisions.
+
+![TimeSeries_JNJQEarnings](../Media/TimeSeries_JNJQEarnings.png)
+
+For any data set, there are two assumptions that must be made. First, we assume that the price we receive is a collection of data points with constant time intervals. You may determine the interval depending on the type of trader you are. This is summarized in the table below.
+
+```{r Stock Intervals, echo = FALSE, message = FALSE, warning = FALSE}
+stockIntervals = data.frame('Day Trader' = c('15-minute', '60-minute', '240-minute'), 'Swing Trader' = c('Daily', 'Weekly', 'Monthly'), 'Investor' = c('Quarterly', 'Yearly', '5-Yearly'))
+
+knitr::kable(stockIntervals, col.names = gsub("[.]", " ", names(stockIntervals)))
+```
+
+# Market Stochasticity
+Second, we assume the price movements in the market are random, and hence follow a stochastic process. They are time-dependent and exhibits trend and seasonal patterns. 
+
+Typically, we can easily see that on a daily chart, the stock price is either in an uptrend, sideways, or downtrend pattern. The daily price of SPY shows exactly this. Uptrend from 2019-2020, but then COVID-19 hits, inducing a few months of setback before the price starts to recover. It then moves sideways in the second half of 2020 before continuing the uptrend. Since the beginning of 2022, SPY has been on an overall downtrend.
+
+![TimeSeries_Trend](../Media/TimeSeries_Trend.png)
+
+We can also observe the seasonal effects on price due to weekends and holidays. For example, Ester in April or Thanksgiving in the November may be what's contributing to the upside return extension for SPY.
+
+![TimeSeries_Seasonality](../Media/TimeSeries_Seasonality.png)
+
+Research shows that one of the most useful methods of obtaining parsimony in a time series model is to assume some form of stationarity. We will discuss this next.
+
+# Stationarity Assumptions
+[description here]
+
+```{r SPY Log Return, echo = FALSE, message = FALSE, warning = FALSE}
+# Compute log-return for asset
+lr_spy <- na.omit(diff(log(spy)))
+
+# Plot time series price data
+qplot(index(lr_spy), lr_spy, ylab="Log Return", xlab="Date", main="SPY Daily Log Return (2018-08-27 to 2022-08-27)", geom = "line")
+```
+
+## Weak Stationarity Assumption
+## Weak Stationarity & The Principle of Parsimony
+
+## Differencing Parameter d
+
+```{r}
+lr_spy_arima0 <- auto.arima(lr_spy, d=0, stepwise = FALSE, approximation = FALSE, ic = 'bic', trace = TRUE)
+ts.plot(lr_spy, main = 'ARIMA(4,0,1) or ARMA(4,1) to Fit Log Returns', ylab = 'Log Return', xlab = 'Day')
+points(fitted(lr_spy_arima0), type = "l", col = 2, lty = 2)
+
+lr_spy_arima1 <- auto.arima(lr_spy, d=1, stepwise = FALSE, approximation = FALSE, ic = 'bic', trace = TRUE)
+ts.plot(lr_spy, main = expression("ARIMA(4,1,0) to Fit Log Returns or ARMA(4,0) to Fit"~Delta~"Log Returns"), ylab = expression(Delta~'Log Return'), xlab = 'Day')
+points(fitted(lr_spy_arima1), type = "l", col = 2, lty = 2)
+
+lr_spy_arima2 <- auto.arima(lr_spy, d=2, stepwise = FALSE, approximation = FALSE, ic = 'bic', trace = TRUE)
+ts.plot(lr_spy, main = expression("ARIMA(5,2,0) to Fit Log Returns or ARMA(5,0) to Fit"~Delta^2~"Log Returns"), ylab = expression(Delta^2~'Log Return'), xlab = 'Day')
+points(fitted(lr_spy_arima2), type = "l", col = 2, lty = 2)
+```
+
+## Unit Root Tests
+
+```{r}
+# Augmented Dickey-Fuller Test
+adf.test(lr_spy)
+
+# Phillips–Perron Test
+pp.test(lr_spy)
+
+# KPSS Test
+kpss.test(lr_spy)
+
+```
+
+## ARIMA(p,d,q)
+
+```{r}
+lr_spy_arima002 <- auto.arima(lr_spy, ic = 'aic', trace = TRUE)
+ts.plot(lr_spy, main = 'ARIMA(0,0,2) or ARMA(0,2) or AR(2) to Fit Log Returns', ylab = 'Log Return', xlab = 'Day')
+points(fitted(lr_spy_arima002), type = "l", col = 2, lty = 2)
+
+lr_spy_arima002
+
+lr_spy_arima303 <- auto.arima(lr_spy, ic = 'bic', trace = TRUE)
+ts.plot(lr_spy, main = 'ARIMA(3,0,3) or ARMA(3,3) to Fit Log Returns', ylab = 'Log Return', xlab = 'Day')
+points(fitted(lr_spy_arima303), type = "l", col = 2, lty = 2)
+
+lr_spy_arima303
+```
+
+```{r, fig.height=8}
+tsdiag(lr_spy_arima303, gof.lag = 20)
+```
+
+```{r}
+# QQ plot of model residuals
+qqnorm(lr_spy_arima303$residuals)
+qqline(lr_spy_arima303$residuals, col = "black", lwd = 2)
+```
+
+## ARCH(1)
+
+```{r}
+lr_spy_garch01 <- garch(lr_spy, order = c(0, 1), coef = NULL,
+itmax = 200, eps = NULL, trace=FALSE)
+
+plot(lr_spy_garch01$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+
+qqnorm(lr_spy_garch01$residuals)
+qqline(lr_spy_garch01$residuals)
+
+hist(lr_spy_garch01$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+```
+## ARCH(2)
+
+```{r}
+lr_spy_garch02 <- garch(lr_spy, order = c(0,2), coef = NULL,
+itmax = 200, eps = NULL, trace=FALSE)
+
+plot(lr_spy_garch02$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+
+qqnorm(lr_spy_garch02$residuals)
+qqline(lr_spy_garch02$residuals)
+
+hist(lr_spy_garch02$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+```
+## ARCH(3)
+
+```{r}
+lr_spy_garch03 <- garch(lr_spy, order = c(0,3), coef = NULL,
+itmax = 200, eps = NULL, trace=FALSE)
+
+plot(lr_spy_garch03$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+
+qqnorm(lr_spy_garch03$residuals)
+qqline(lr_spy_garch03$residuals)
+
+hist(lr_spy_garch03$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+```
+
+## ARCH(4)
+
+```{r}
+lr_spy_garch04 <- garch(lr_spy, order = c(0,4), coef = NULL,
+itmax = 200, eps = NULL, trace=FALSE)
+
+plot(lr_spy_garch04$residuals,main='Plot of Residuals', ylab = 'Residuals',type="l")
+
+qqnorm(lr_spy_garch04$residuals)
+qqline(lr_spy_garch04$residuals)
+
+hist(lr_spy_garch04$residuals, breaks = 50, main="Histogram of Residuals", xlab = 'Residuals')
+```
+## ARCH(4) Prediction
+
+```{r}
+sigma_t <- fitted(lr_spy_garch04)[,1]
+eps_t <- lr_spy_garch01$residuals
+fitted <- sigma_t*eps_t
+
+ts.plot(lr_spy, main = 'SPY Daily Log Return with ARCH(4) Process', ylab = 'Log Return', xlab = 'Day')
+points(fitted, type = "l", col = 2, lty = 2)
+
+```
+
+## GARCH(1,1) Prediction
+
+```{r}
+lr_spy_garch11 <- garch(lr_spy, order = c(1,1), coef = NULL,
+itmax = 200, eps = NULL, trace=FALSE)
+sigma_t <- fitted(lr_spy_garch11)[,1]
+eps_t <- lr_spy_garch11$residuals
+fitted <- sigma_t*eps_t
+
+ts.plot(lr_spy, main = 'SPY Daily Log Return with GARCH(1,1) Process', ylab = 'Log Return', xlab = 'Day')
+points(fitted, type = "l", col = 2, lty = 2)
+```
+
+
+## GARCH(1,1) with Normal Innovations
+```{r, fig.width=8}
+lr_spy_garch11 = garchFit(~garch(1,1), data= lr_spy,
+cond.dist = c("norm"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace=FALSE) #can try "norm", "std", "ged" for innovations
+summary(lr_spy_garch11)
+
+sigma_t = lr_spy_garch11@sigma.t
+estResidsD=data.frame(estResids=lr_spy_garch11@residuals / sigma_t)
+
+# histogram
+ggplot(estResidsD, aes(x=estResids))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', y = 'Density', title="GARCH(1,1) Standardized Residuals Histogram with Normal Assumption")+ stat_function(fun = dnorm)
+
+# qqplot
+ggplot(estResidsD, aes(sample=estResids))+ stat_qq(distribution = qnorm) + stat_qq_line(distribution = qnorm)+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized  Residuals QQ Plot with Normal Fit")
+
+# volatility estimation
+ggplot2::qplot(index(lr_spy), lr_spy, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with Normal Innovations", geom = "line")+geom_line(data = as.data.frame(sigma_t), aes(y=sigma_t), color = "red")+geom_line(data = as.data.frame(-sigma_t), aes(y=-sigma_t), color = "red") 
+
+# residual estimation
+ggplot2::qplot(index(lr_spy), estResidsD$estResids, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with Normal Assumption", geom = "line")
+
+# residual autocorrelation
+ggAcf(estResidsD$estResids^2, main="GARCH (1,1) ACF of Standardized Squared Residuals with Normal Assumption")
+
+# forecast with this model
+predict(lr_spy_garch11, n.ahead = 73, plot=TRUE, nx=length(lr_spy))
+```
+
+## GARCH(1,1) with Student-t Innovations
+```{r, fig.width=8}
+lr_spy_garch11 = garchFit(~garch(1,1), data= lr_spy,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace=FALSE) #can try "norm", "std", "ged" for innovations
+summary(lr_spy_garch11)
+
+sigma_t = lr_spy_garch11@sigma.t
+estResidsD=data.frame(estResids=lr_spy_garch11@residuals / sigma_t)
+
+# histogram
+nu=coef(lr_spy_garch11)[['shape']]
+ggplot(estResidsD, aes(x=estResids))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', title="GARCH(1,1) Standardized Residuals Histogram with Student-t Assumption")+ stat_function(fun = dstd, args = list(nu=nu))
+
+# qqplot
+ggplot(estResidsD, aes(sample=estResids))+ stat_qq(distribution = qstd, dparams=list(nu=nu)) + stat_qq_line(distribution = qstd, dparams=list(nu=nu))+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized Residuals QQ Plot with Student-t Fit")
+
+# volatility estimation
+ggplot2::qplot(index(lr_spy), lr_spy, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with Student-t Innovations", geom = "line")+geom_line(data = as.data.frame(sigma_t), aes(y=sigma_t), color = "red")+geom_line(data = as.data.frame(-sigma_t), aes(y=-sigma_t), color = "red") 
+
+# residual estimation
+ggplot2::qplot(index(lr_spy), estResidsD$estResids, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with Student-t Assumption", geom = "line")
+
+# residual autocorrelation
+ggAcf(estResidsD$estResids^2, main="GARCH (1,1) ACF of Standardized Squared Residuals with Student-t Assumption")
+
+# forecast with this model
+predict(lr_spy_garch11, n.ahead = 73, plot=TRUE, conf = 0.95, nx=length(lr_spy))
+```
+
+## GARCH(1,1) with GED Innovations
+```{r, fig.width=8}
+lr_spy_garch11 = garchFit(~garch(1,1), data= lr_spy,
+cond.dist = c("ged"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace=FALSE) #can try "norm", "std", "ged" for innovations
+summary(lr_spy_garch11)
+
+sigma_t = lr_spy_garch11@sigma.t
+estResidsD=data.frame(estResids=lr_spy_garch11@residuals / sigma_t)
+
+# histogram
+kappa = kurtosis(estResidsD$estResids, method = 'excess')[1]
+nu_grid = seq(0.5, 2, 0.001)
+kappas = (gamma(5 / nu_grid) * gamma(1 / nu_grid) / gamma(3 / nu_grid^2))- 3
+nu= nu_grid[which.min(kappas > kappa)]
+ggplot(estResidsD, aes(x=estResids))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', title="GARCH(1,1) Standardized Residuals Histogram with GED Assumption")+ stat_function(fun = dged, args = list(nu=nu))
+
+# qq plot
+ggplot(estResidsD, aes(sample=estResids))+ stat_qq(distribution = qged, dparams=list(nu=nu)) + stat_qq_line(distribution = qged, dparams=list(nu=nu))+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized Residuals QQ Plot with GED Fit")
+
+# volatility estimation
+ggplot2::qplot(index(lr_spy), lr_spy, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with GED Innovations", geom = "line")+geom_line(data = as.data.frame(sigma_t), aes(y=sigma_t), color = "red")+geom_line(data = as.data.frame(-sigma_t), aes(y=-sigma_t), color = "red") 
+
+# residual estimation
+ggplot2::qplot(index(lr_spy), estResidsD$estResids, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with GED Assumption", geom = "line")
+
+# residual autocorrelation
+ggAcf(estResidsD$estResids^2, main="GARCH (1,1) ACF of Standardized Squared Residuals with GED Assumption")
+
+# forecast with this model
+predict(lr_spy_garch11, n.ahead = 73, plot=TRUE, nx=length(lr_spy))
+```
+
+# Fitting ARMA(p,q) + GARCH(1,1) with Student-t Innovations
+```{r, fig.width=8}
+# Try GARCH(1,1) model with Student-t innovations
+lr_spy_arma_garch = garchFit(~arma(1,0)+garch(1,1), data= lr_spy,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace = FALSE)
+summary(lr_spy_arma_garch)
+
+sigma_t = lr_spy_arma_garch@sigma.t
+estResidsD=data.frame(estResids=lr_spy_arma_garch@residuals / sigma_t)
+
+# histogram
+nu=coef(lr_spy_arma_garch)[['shape']]
+ggplot(estResidsD, aes(x=estResids))+ geom_histogram(aes(y=..density..),alpha=0.5, bins = 50)+ labs(x='Standardized Residuals', title="GARCH(1,1) Standardized Residuals Histogram with Student-t Assumption")+ stat_function(fun = dstd, args = list(nu=nu))
+
+# qqplot
+ggplot(estResidsD, aes(sample=estResids))+ stat_qq(distribution = qstd, dparams=list(nu=nu)) + stat_qq_line(distribution = qstd, dparams=list(nu=nu))+ labs(x="Theoretical Quantiles", y = "Sample Quantiles", title="GARCH(1,1) Standardized Residuals QQ Plot with Student-t Fit")
+
+# volatility estimation
+ggplot2::qplot(index(lr_spy), lr_spy, ylab="Log Returns", xlab="Date", main="GARCH(1,1) Estimated Volatilities with Student-t Innovations", geom = "line")+geom_line(data = as.data.frame(sigma_t), aes(y=sigma_t), color = "red")+geom_line(data = as.data.frame(-sigma_t), aes(y=-sigma_t), color = "red") 
+
+# residual estimation
+ggplot2::qplot(index(lr_spy), estResidsD$estResids, ylab="Standardized Residuals", xlab="Date", main="GARCH(1,1) Standardized Residuals with Student-t Assumption", geom = "line")
+
+# residual autocorrelation
+ggAcf(estResidsD$estResids^2, main="GARCH (1,1) ACF of Standardized Squared Residuals with Student-t Assumption")
+
+# forecast with this model
+predict(lr_spy_arma_garch, n.ahead = 73, plot=TRUE, conf = 0.95, nx=length(lr_spy))
+```
+
+# Compare GARCH(p,q) Models
+```{r, fig.height=5, fig.width=5, warning=F}
+# The range of GARCH p and q orders to test
+p_param <- 1:4
+q_param <- 1:4
+
+# Create an empty data frame to store information criterion scores
+GARCH_ICs <- data.frame("Model" = character(), 
+                        "AIC" = double(), 
+                        "BIC" = double())
+
+# Populate the date frame
+for (p in p_param){
+  for (q in q_param){
+    garch_std <- garchFit(substitute(~garch(sigma_p,arch_q), list(sigma_p=p, arch_q=q)), data = lr_spy, cond.dist = c("std"), include.mean = FALSE, algorithm = c("nlminb"), hessian = c("ropt"), trace = FALSE)
+    GARCH_ICs[nrow(GARCH_ICs) + 1,] <- c(paste0('GARH(', p, ',', q, ')'), garch_std@fit$ics[1], garch_std@fit$ics[2])
+  }
+}
+
+# Output score table
+knitr::kable(GARCH_ICs[order(GARCH_ICs$BIC,decreasing=TRUE),], col.names = names(GARCH_ICs))
+```
+
+
+# Compare ARMA(p,q)-GARCH(p,q) Models
+
+```{r, fig.height=5, fig.width=5, warning=F}
+# The range of ARMA p and q orders to test
+p_param <- 0:4
+q_param <- 0:4
+
+# Create an empty data frame to store information criterion scores
+ARMA_GARCH_ICs <- data.frame("Model" = character(), 
+                        "AIC" = double(), 
+                        "BIC" = double())
+
+# Populate the date frame
+for (p in p_param){
+  for (q in q_param){
+    arma_garch_std <- garchFit(substitute(~arma(arma_p, arma_q)+garch(1,1), list(arma_p=p, arma_q=q)), data = lr_spy, cond.dist = c("std"), include.mean = FALSE, algorithm = c("nlminb"), hessian = c("ropt"), trace = FALSE)
+    ARMA_GARCH_ICs[nrow(ARMA_GARCH_ICs) + 1,] <- c(paste0('ARMA(', p, ',', q, ')-GARCH(1,1)'), arma_garch_std@fit$ics[1], arma_garch_std@fit$ics[2])
+  }
+}
+
+# Output score table
+knitr::kable(ARMA_GARCH_ICs[order(ARMA_GARCH_ICs$BIC,decreasing=TRUE),], col.names = names(ARMA_GARCH_ICs))
+```
+
+<!-- # Prediciton -->
+<!-- ```{r} -->
+<!-- library(xts) -->
+<!-- synth_log_returns = dis_lr -->
+<!-- T = 500 -->
+
+<!-- # Estimated volatility values -->
+<!-- fore11 <- predict(garch11_std, n.ahead = T, plot=F, nx=length(dis_lr)) -->
+
+<!-- dates_out_of_sample <-seq(as.Date(tail(index(synth_log_returns),1))+1, by = "day", length.out = T) -->
+
+
+<!-- fitted_xts = xts(garch11_std@sigma.t, index(dis_lr)) -->
+<!-- forecast_xts = xts(fore11$standardDeviation, dates_out_of_sample) -->
+
+<!-- plot(cbind("fitted_upper" = fitted_xts, -->
+<!--            "fitted_lower" = -fitted_xts, -->
+<!--            "forecast_upper" = forecast_xts, -->
+<!--            "forecast_lower" = -forecast_xts, -->
+<!--            "original" = synth_log_returns),  -->
+<!--      col = c("blue", "blue", "red", "red", "black"), lwd = c(1, 1, 1, 1, 1), -->
+<!--      main = "Volatility Forecast", legend.loc = "topleft") -->
+<!-- ``` -->
+
+
+# Risk Table
+
+```{r}
+lr_spy_garch11 = garchFit(~garch(1,1), data= lr_spy,
+cond.dist = c("std"), include.mean = FALSE,
+algorithm = c("nlminb"), hessian = c("ropt"),
+trace=FALSE)
+
+# Compute estimated volatility
+garch11_std_est <- predict(lr_spy_garch11, n.ahead = 1)
+
+# Mean forecast - assumed to be 0
+garch11_std_mu = garch11_std_est$meanForecast
+
+# Degrees of freedom forecast
+garch11_std_nu <- coef(lr_spy_garch11)[['shape']]
+
+# Standard deviation forecast
+garch11_std_sigma = garch11_std_est$standardDeviation
+
+# Create an empty data frame to store rVaR and rES results
+risk_df <- data.frame("Significance.Level" = double(), 
+                        "rVaR" = double(), 
+                        "rES" = double())
+
+# Probability of loss (significance level)
+alpha_c = c(0.01, 0.05, 0.1)
+
+# Number of Monte Carlo samples for generation
+N=1e7
+
+# Set seed so that random loss generated can be reproduced
+set.seed(1)
+
+# Simulate 10 million losses based on Student-t estimates
+garch11_std_simLoss = -(exp(rstd(N, mean=garch11_std_mu, sd=garch11_std_sigma, nu = garch11_std_nu))-1)
+
+# For loop to populate risk table
+for(a in alpha_c){
+  # Calculate rVaR
+  garch11_std_rVaR = - (exp(garch11_std_mu + garch11_std_sigma * sqrt((garch11_std_nu-2)/garch11_std_nu) * qt(a, df = garch11_std_nu)) - 1)
+  # Calculate rES
+  garch11_std_rES = mean(garch11_std_simLoss[garch11_std_simLoss > garch11_std_rVaR])
+  # Populate risk table at each significance table
+  risk_df[nrow(risk_df) + 1,] <- c(a, garch11_std_rVaR, garch11_std_rES)
+}
+
+# Output risk table
+knitr::kable(risk_df, col.names = names(risk_df))
+
+
+
+
+
+
+
+
+
+
+```
+
